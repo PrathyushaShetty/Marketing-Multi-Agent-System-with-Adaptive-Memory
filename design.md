@@ -53,32 +53,15 @@ end
 
 ```mermaid
 flowchart TB
-    subgraph Client["Client"]
-        Uploader["User / Application"]
-    end
+  Client[Client or Server-Side Consumer] -->|POST /api/MY_DOC_API/upload| Worker[Cloudflare Worker]
+  Worker -->|store object| R2[(R2 Bucket: DOCS_BUCKET)]
+  Worker -->|index mapping: doc_id → key| KV[(KV Store: DOCS_INDEX)]
 
-    subgraph API["Cloudflare Worker API"]
-        UploadEndpoint["POST /files/upload"]
-        GetEndpoint["GET /files/:document_id"]
-        Auth["API Key Validation"]
-    end
+  Client -->|GET /api/MY_DOC_API/doc/:id/url| Worker
+  Worker -->|lookup key by id| KV
+  Worker -->|create signed URL| URL[(Download URL)]
+  URL --> Client
 
-    subgraph Storage["Cloudflare R2 Bucket"]
-        FileStorage["File Objects"]
-        Metadata["Object Metadata"]
-    end
-
-    Uploader -->|Upload request + x-api-key| Auth
-    Auth -->|valid| UploadEndpoint
-    Auth -->|valid| GetEndpoint
-    Auth -->|invalid| Error["403 Forbidden"]
-
-    UploadEndpoint -->|Put object| FileStorage
-    UploadEndpoint -->|Return document_id| Uploader
-
-    GetEndpoint -->|Lookup object| FileStorage
-    FileStorage -->|Return presigned URL| GetEndpoint
-    GetEndpoint --> Uploader
 
 ```
 
