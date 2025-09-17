@@ -53,14 +53,15 @@ end
 
 ```mermaid
 flowchart TB
-  Client[Client (User/App)] -->|POST /upload| Worker[Cloudflare Worker (API Layer)]
-  Worker -->|store file| R2[(R2 Bucket: File Storage)]
-  Worker -->|map doc_id → object key| D1[(D1 Database: Metadata Mapping)]
+  Client[Client] -->|POST upload| Worker[Cloudflare Worker]
+  Worker -->|store file| R2[(R2 Bucket)]
+  Worker -->|map doc_id to object key| D1[(D1 Database)]
 
-  Client -->|GET /doc/:id| Worker
+  Client -->|GET doc by id| Worker
   Worker -->|lookup doc_id| D1
   Worker -->|fetch file| R2
   Worker -->|return file| Client
+
 ```
 ## 3️⃣ Component Reference List
 
