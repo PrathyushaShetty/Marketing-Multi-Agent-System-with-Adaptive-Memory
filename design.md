@@ -52,15 +52,17 @@ end
 ## 2️⃣ High-Level App Flow
 
 ```mermaid
+```mermaid
 flowchart TB
-  Client[Client or Server-Side Consumer] -->|POST /api/MY_DOC_API/upload| Worker[Cloudflare Worker]
-  Worker -->|store object| R2[(R2 Bucket: DOCS_BUCKET)]
-  Worker -->|index mapping: doc_id → key| KV[(KV Store: DOCS_INDEX)]
+  Client[Client (User/App)] -->|POST /upload| Worker[Cloudflare Worker (API Layer)]
+  Worker -->|store file| R2[(R2 Bucket: File Storage)]
+  Worker -->|map doc_id → object key| D1[(D1 Database: Metadata Mapping)]
 
-  Client -->|GET /api/MY_DOC_API/doc/:id| Worker
-  Worker -->|lookup key by id| KV
-  Worker -->|fetch object| R2
-  R2 --> Worker --> Client
+  Client -->|GET /doc/:id| Worker
+  Worker -->|lookup doc_id| D1
+  Worker -->|fetch file| R2
+  Worker -->|return file| Client
+
 
 
 
