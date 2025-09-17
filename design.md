@@ -60,7 +60,7 @@ flowchart TB
 
   Client -->|GET /api/MY_DOC_API/doc/:id/url| Worker
   Worker -->|lookup key by id| KV
-  Worker -->|create URL (signed or proxy)| URL((Download URL))
+  Worker -->|create URL signed or proxy| URL(Download URL)
   URL --> Client
 ```
 
