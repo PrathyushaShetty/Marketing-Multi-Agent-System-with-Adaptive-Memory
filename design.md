@@ -57,10 +57,11 @@ flowchart TB
   Worker -->|store object| R2[(R2 Bucket: DOCS_BUCKET)]
   Worker -->|index mapping: doc_id → key| KV[(KV Store: DOCS_INDEX)]
 
-  Client -->|GET /api/MY_DOC_API/doc/:id/url| Worker
+  Client -->|GET /api/MY_DOC_API/doc/:id| Worker
   Worker -->|lookup key by id| KV
-  Worker -->|create signed URL| URL[(Download URL)]
-  URL --> Client
+  Worker -->|fetch object| R2
+  R2 --> Worker --> Client
+
 
 
 ```
