@@ -477,3 +477,280 @@ Changes to GitHub Actions or Helm charts require code review per platform policy
 - [x] Worker code snippets for POST upload and GET URL retrieval
 - [x] Local dev and CI/CD outline
 
+
+# HumanizeIQ – MY_DOC_API (Cloudflare Worker) Design
+
+This document defines the design for a Cloudflare Worker API that:
+- Uploads file contents to an R2 bucket under a specified folder (POST)
+- Returns a retrievable document URL for a document ID (GET)
+- Persists `doc_id → R2 key + metadata` in D1
+- Authenticates via `x-api-key`
+
+This design aligns with the current `cf-worker-api-template` structure and your Cloudflare dashboard bindings (R2 + D1).
+
+---
+
+## 1️⃣ Customized System Blueprint
+
+```mermaid
+flowchart TB
+  subgraph UX["User Interface"]
+    Web["Web Applications"]
+  end
+
+  subgraph Core["Core Components"]
+    ApplicationAPI["Cloudflare Worker: MY_DOC_API (Hono)"]
+    D1DB["D1 Database: CF_TEMPLATE_DB"]
+    R2["R2 Bucket: CF_TEMPLATE_BUCKET"]
+  end
+
+  UX --> ApplicationAPI
+  ApplicationAPI --> R2
+  ApplicationAPI --> D1DB
+
+  %% Highlights
+  style ApplicationAPI fill:#00C853
+  style D1DB fill:#FFD600
+```
+
+- ✅ Built: `ApplicationAPI` (this Worker)
+- 🔶 Used: `R2`, `D1`
+
+---
+
+## 2️⃣ High-Level Flow
+
+```mermaid
+flowchart TB
+  Client -->|POST /api/MY_DOC_API/upload| Worker
+  Worker -->|put object| R2[(R2: CF_TEMPLATE_BUCKET)]
+  Worker -->|insert mapping| D1[(D1: CF_TEMPLATE_DB)]
+
+  Client -->|GET /api/MY_DOC_API/doc/:id/url| Worker
+  Worker -->|lookup by id| D1
+  Worker -->|return proxy/signed URL| Client
+
+  Client -->|GET /api/MY_DOC_API/doc/:id/download?token=...| Worker
+  Worker -->|stream object| R2
+```
+
+---
+
+## 3️⃣ Component References
+
+- Built
+  - `MY_DOC_API` (this Worker)
+- Used
+  - R2: `CF_TEMPLATE_BUCKET` (e.g., `cf-template-playtest`)
+  - D1: `CF_TEMPLATE_DB` (database for metadata)
+
+---
+
+## 4️⃣ API Overview and Route Mount
+
+- Runtime: Cloudflare Workers (TypeScript) with Hono
+- Base mount: `/api/${APP_NAME}` with `APP_NAME=MY_DOC_API`
+- Mandatory endpoints:
+  - `GET /health` → returns `OK`
+  - `GET /api-name` → returns env `APP_NAME`
+- Authentication: `x-api-key: <API_KEY>` required on protected routes (template `authMiddleware` already applied under `/api/<app-name-lowercase>/*`)
+
+---
+
+## 5️⃣ Endpoints
+
+### 5.1 POST `/api/MY_DOC_API/upload`
+
+Uploads a file to R2 under a specified folder and records mapping in D1.
+
+- Auth: `x-api-key` required
+- Accepts:
+  - `multipart/form-data`
+    - `file` (File) – required
+    - `folder` (string) – required (e.g., `invoices/2025`)
+    - `filename` (string) – optional
+  - or `application/octet-stream` with `?folder=&filename=` query
+- Behavior:
+  - Normalize folder (strip leading/trailing slashes)
+  - Generate `doc_id` (UUID v4)
+  - Key: `${folder}/${doc_id}/${filename}`
+  - Put to `CF_TEMPLATE_BUCKET` with correct `content-type`
+  - Insert D1 row: `documents(doc_id, r2_key, content_type, size_bytes, created_at)`
+- Success 201
+```json
+{
+  "doc_id": "1b2c3d4e-...",
+  "key": "invoices/2025/1b2c3d4e-.../invoice-001.pdf",
+  "size": 204800,
+  "content_type": "application/pdf"
+}
+```
+- Errors: `BAD_REQUEST`, `FORBIDDEN`, `UPLOAD_FAILED`
+
+### 5.2 GET `/api/MY_DOC_API/doc/:id/url`
+
+Returns a retrievable URL for the document.
+
+- Auth: `x-api-key` required
+- Query:
+  - `mode` = `proxy` (default) or `presigned`
+  - `expires` = seconds (default 600, max 3600)
+- Modes:
+  - `proxy`: returns Worker URL `/api/MY_DOC_API/doc/:id/download?token=...` where token is HMAC of `doc_id.expiry`
+  - `presigned`: optional R2 S3-style presigned URL (requires S3 creds in secrets)
+- Success 200
+```json
+{
+  "doc_id": "1b2c3d4e-...",
+  "url": "https://<domain>/api/MY_DOC_API/doc/1b2c3d4e-.../download?token=eyJ...",
+  "expires_in": 600,
+  "mode": "proxy"
+}
+```
+
+### 5.3 GET `/api/MY_DOC_API/doc/:id/download`
+
+Streams the object when a valid `token` is supplied (HMAC over `doc_id.expiry`).
+
+### 5.4 GET `/health`
+
+Returns `OK` to indicate service is healthy.
+
+### 5.5 GET `/api-name`
+
+Returns the `APP_NAME` value.
+
+---
+
+## 6️⃣ Authentication & Error Format
+
+- Auth header: `x-api-key: <API_KEY>`
+- Error format
+```json
+{ "error": { "code": "FORBIDDEN", "message": "Your API key is invalid or missing." } }
+```
+- Common codes: `BAD_REQUEST`, `FORBIDDEN`, `NOT_FOUND`, `UPLOAD_FAILED`, `EXPIRED`, `BAD_TOKEN`
+
+---
+
+## 7️⃣ Data Model (D1)
+
+```sql
+-- migrations/0001_init.sql
+CREATE TABLE IF NOT EXISTS documents (
+  doc_id TEXT PRIMARY KEY,
+  r2_key TEXT NOT NULL,
+  content_type TEXT,
+  size_bytes INTEGER,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_documents_created_at ON documents (created_at);
+```
+
+- Insert on upload: `INSERT INTO documents (doc_id, r2_key, content_type, size_bytes) VALUES (?, ?, ?, ?)`
+- Lookup for URL: `SELECT r2_key, content_type FROM documents WHERE doc_id = ?`
+
+---
+
+## 8️⃣ Bindings & Environment
+
+Use the same binding names visible in your Cloudflare dashboard screenshot:
+
+- R2 Bucket binding: `CF_TEMPLATE_BUCKET`
+- D1 Database binding: `CF_TEMPLATE_DB`
+
+Secrets and vars:
+- `API_KEY` – primary API key
+- `URL_SIGNING_SECRET` – HMAC secret for proxy token signing
+- Optional for `presigned` mode: `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_ACCOUNT_ID`
+
+### Example `wrangler.toml`
+
+```toml
+name = "my-doc-api"
+main = "src/index.ts"
+compatibility_date = "2024-09-01"
+
+[[r2_buckets]]
+binding = "CF_TEMPLATE_BUCKET"
+bucket_name = "cf-template-playtest" # adjust if different
+
+[[d1_databases]]
+binding = "CF_TEMPLATE_DB"
+database_name = "cf-template-playtest"
+database_id = "<d1-database-id>"
+
+[vars]
+APP_NAME = "MY_DOC_API"
+```
+
+---
+
+## 9️⃣ Implementation Notes (Hono + TypeScript)
+
+- Update the template’s placeholders to mount under `/api/my_doc_api/*` consistently
+- Add routes:
+  - `POST /api/my_doc_api/upload` → R2 put → D1 insert
+  - `GET /api/my_doc_api/doc/:id/url` → D1 lookup → build proxy/presigned URL
+  - `GET /api/my_doc_api/doc/:id/download` → validate token → R2 stream
+  - `GET /api-name` → return `env.APP_NAME`
+- Implement helpers: `uuidv4()`, `normalizeFolder()`, `hmacSHA256(secret, data)`, `json()`, `error()`
+
+---
+
+## 🔟 Local Development
+
+- `wrangler login`
+- Create resources if needed:
+  - `wrangler r2 bucket create cf-template-playtest`
+  - `wrangler d1 create cf-template-playtest`
+- Set secrets:
+  - `wrangler secret put API_KEY`
+  - `wrangler secret put URL_SIGNING_SECRET`
+- Run: `wrangler dev`
+
+---
+
+## 1️⃣1️⃣ CI/CD
+
+```mermaid
+flowchart TB
+    Build[Build & Push] --> DeployDev[Deploy to Dev]
+    DeployDev --> EA[Environment Approval]
+    EA --> DeployProd[Deploy to Prod]
+    DeployProd --> Merge[Merge to Main]
+```
+
+- Workflow name: "MY-DOC-API Cloudflare Worker"
+- Production deploys require approval; workflow and infra changes need code review
+
+---
+
+## 1️⃣2️⃣ Example Requests
+
+Upload (multipart):
+```bash
+curl -X POST "https://<domain>/api/MY_DOC_API/upload" \
+  -H "x-api-key: <API_KEY>" \
+  -F "file=@./invoice.pdf" \
+  -F "folder=invoices/2025" \
+  -F "filename=invoice-001.pdf"
+```
+
+Get URL:
+```bash
+curl -X GET "https://<domain>/api/MY_DOC_API/doc/<DOC_ID>/url?mode=proxy&expires=600" \
+  -H "x-api-key: <API_KEY>"
+```
+
+---
+
+## 1️⃣3️⃣ Submission Checklist
+
+- [x] Customized blueprint with highlights
+- [x] High-level flow diagram
+- [x] API specs and error format
+- [x] D1 schema and queries
+- [x] Bindings and wrangler examples
+- [x] Local dev and CI outline
