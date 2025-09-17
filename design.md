@@ -52,7 +52,6 @@ end
 ## 2️⃣ High-Level App Flow
 
 ```mermaid
-```mermaid
 flowchart TB
   Client[Client (User/App)] -->|POST /upload| Worker[Cloudflare Worker (API Layer)]
   Worker -->|store file| R2[(R2 Bucket: File Storage)]
@@ -62,14 +61,7 @@ flowchart TB
   Worker -->|lookup doc_id| D1
   Worker -->|fetch file| R2
   Worker -->|return file| Client
-
-
-
-
 ```
-
----
-
 ## 3️⃣ Component Reference List
 
 - **Built Components**
