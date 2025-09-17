@@ -12,33 +12,32 @@ The API conforms to HumanizeIQ standards for design, auth, routing, and review.
 ## 1️⃣ Customized System Blueprint
 
 ```mermaid
-flowchart TB
-  subgraph UX["User Interface"]
-    Web["Web Applications"]
-    Devices["Devices"]
-  end
+flowchart 
+    subgraph UX[User Interface]
+        Web[Web Applications]
+        Devices[Devices]
+    end
 
-  subgraph Core["Core Components"]
-    Orchestrator["Dify, n8n, Flowwise"]
-    ApplicationAPI["ApplicationAPI (Cloudflare Worker)"]
-    CoreAPIs["CoreAPIs"]
-    VDB["Vector Database -pgvector, Milvus, QDrant etc"]
-    Database["Database"]
-  end
+    subgraph Core[Core Components]
+        ApplicationAPI --> Orchestrator[Dify, n8n, Flowwise]
+        ApplicationAPI --> CoreAPIs
+        ApplicationAPI --> VDB[Vector Database -pgvector, Milvus, QDrant etc]
+        Orchestrator --> CoreAPIs
+        CoreAPIs --> Database
+        ApplicationAPI --> Database
+    end
 
-  subgraph Gateway["AI Gateway"]
-    Guardrails["Guardrails"]
-    LP["LLM Proxy - Cloudflare, LiteLLM, Portkey"]
-    Tracing["AI Tracing + Logging - Langfuse, Cloudflare"]
-    OpenAI["GPT Models"]
-    Anthropic["Claude Models"]
-    Internal["Internal Models"]
-  end
+    UX --> Core
 
-  UX --> Core
-  ApplicationAPI --> CoreAPIs
-  ApplicationAPI --> Database
-  Core --> Gateway
+    subgraph Gateway[AI Gateway]
+        LP[LLM Proxy - Cloudflare, LiteLLM, Portkey] --> Guardrails[Guardrails]
+        LP --> Tracing[AI Tracing + Logging - Langfuse, Cloudflare]
+        LP --> OpenAI[GPT Models]
+        LP --> Anthropic[Claude Models]
+        LP --> Internal[Internal Models]
+end
+
+    Core --> Gateway
 
   %% Highlights
   style ApplicationAPI fill:#00C853
