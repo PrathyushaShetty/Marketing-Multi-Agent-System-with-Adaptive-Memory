@@ -1,3 +1,29 @@
+
+
+```mermaid
+flowchart TB
+    subgraph ClientSide[Client Layer]
+        UI[File Management Interface]
+    end
+
+    subgraph WorkerAPI[Cloudflare Worker API]
+        API[MY_DOC_API - Hono.js]
+        AuthMiddleware[Authentication Middleware]
+        Swagger[OpenAPI Docs]
+    end
+
+    subgraph Storage[Storage Layer]
+        R2[(Cloudflare R2 Storage)]
+        MetaDB[(Cloudflare D1 Metadata DB)]
+    end
+
+    UI --> API
+    API --> AuthMiddleware
+    API --> Swagger
+    API --> R2
+    API --> MetaDB
+```
+
 # HumanizeIQ – MY_DOC_API (Cloudflare Worker) Design
 
 This document defines the design for an API implemented as a Cloudflare Worker that:
