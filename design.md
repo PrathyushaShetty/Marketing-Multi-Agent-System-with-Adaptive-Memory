@@ -1277,3 +1277,430 @@ export const r2 = env => ({
 
 *Last updated: 2025-09-18*
 *Version: 1.0*
+
+# 📁 Design Document – MY_DOC_API
+##  Overview
+
+Provides secure API to upload files to R2 bucket and retrieve document URLs with metadata using Cloudflare D1 database via native Worker bindings.
+
+## Customized System Blueprint
+
+```mermaid
+flowchart
+    subgraph UX[User Interface]
+        Web[Web Applications]
+        Devices[Devices]
+    end
+    subgraph Core[Core Components]
+        ApplicationAPI --> Orchestrator[Dify, n8n, Flowwise]
+        ApplicationAPI --> CoreAPIs
+        ApplicationAPI --> VDB[Vector Database -pgvector, Milvus, QDrant etc]
+        Orchestrator --> CoreAPIs
+        CoreAPIs --> Database
+        ApplicationAPI --> Database
+    end
+    subgraph Gateway[AI Gateway]
+        LP[LLM Proxy - Cloudflare, LiteLLM, Portkey] --> Guardrails[Guardrails]
+        LP --> Tracing[AI Tracing + Logging - Langfuse, Cloudflare]
+        LP --> OpenAI[GPT Models]
+        LP --> Anthropic[Claude Models]
+        LP --> Internal[Internal Models]
+    end
+    UX --> Core
+    Core --> Gateway
+    style Web fill:#00C853
+    style ApplicationAPI fill:#00C853
+    style CoreAPIs fill:#FFD600
+```
+
+---
+
+## High-Level Flow Diagram
+
+```mermaid
+flowchart TB
+    UI[File Management Interface] --> API[MY_DOC_API - Hono.js]
+    API --> R2[Cloudflare R2 Storage]
+    API --> MetaDB[Metadata DB - Cloudflare D1]
+    API --> AuthMiddleware[Authentication Middleware]
+    API --> Swagger[OpenAPI Documentation]
+```
+## 🔐 Authentication
+
+| Header          | Required | Description                               |
+| --------------- | -------- | ----------------------------------------- |
+| `X-Api-Token`   | ✅        | API token                                 |
+| `Authorization` | ✅        | Bearer token (alternative to X-Api-Token) |
+
+---
+
+## 🗭 Access URL
+
+- Path: `/api/cf-template/*`
+
+---
+
+## 🔧 Endpoints Summary
+
+| Method | Path                           | Description                                |
+| ------ | ------------------------------ | ------------------------------------------ |
+| POST   | `/files/upload`                | Upload file with metadata                  |
+| GET    | `/files/{documentId}`          | Retrieve document URL or metadata          |
+| GET    | `/health`                      | Health check                               |
+| GET    | `/api-name`                    | Returns app name                           |
+
+---
+
+## 📅 Detailed Endpoint Definitions
+
+### POST `/api/cf-template/files/upload`
+
+Upload a file to R2 bucket under specified folder with metadata storage in D1.
+
+#### Authentication: Required (uses existing auth middleware)
+
+#### Request Headers:
+```
+Content-Type: multipart/form-data
+Authorization: Bearer <token> (or X-Api-Token)
+```
+
+#### Request Body (multipart/form-data):
+```
+file: <binary file data>
+folder: <string> (optional, defaults to "documents")
+filename: <string> (optional, uses original filename if not provided)
+metadata: <JSON string> (optional, additional file metadata)
+```
+
+#### Response (Success - 201):
+```json
+{
+  "success": true,
+  "documentId": "doc_1234567890abcdef",
+  "filename": "document.pdf",
+  "folder": "documents",
+  "size": 1048576,
+  "contentType": "application/pdf",
+  "uploadedAt": "2025-09-17T12:55:46.000Z",
+  "uploadedBy": "user123"
+}
+```
+
+#### Response (Error - 400/413/500):
+```json
+{
+  "success": false,
+  "error": "File too large",
+  "code": "FILE_TOO_LARGE",
+  "maxSize": "100MB"
+}
+```
+
+---
+
+### GET `/api/cf-template/files/{documentId}`
+
+Retrieve document URL or metadata for a given document ID.
+
+#### Authentication: Required (uses existing auth middleware)
+
+#### Path Parameters:
+- `documentId`: Unique identifier for the document
+
+#### Query Parameters:
+- `download`: boolean (optional, defaults to false) - If true, returns download URL
+- `expires`: number (optional, defaults to 3600) - URL expiration time in seconds
+
+#### Response (Success - 200):
+```json
+{
+  "success": true,
+  "documentId": "doc_1234567890abcdef",
+  "filename": "document.pdf",
+  "folder": "documents",
+  "size": 1048576,
+  "contentType": "application/pdf",
+  "uploadedAt": "2025-09-17T12:55:46.000Z",
+  "uploadedBy": "user123",
+  "url": "https://r2-bucket.example.com/signed-url...",
+  "expiresAt": "2025-09-17T13:55:46.000Z"
+}
+```
+
+#### Response (Error - 404):
+```json
+{
+  "success": false,
+  "error": "Document not found",
+  "code": "DOCUMENT_NOT_FOUND"
+}
+```
+
+---
+
+### GET `/health`
+
+Health check endpoint.
+
+#### Response:
+```
+OK
+```
+
+---
+
+### GET `/MY-DOC-API`
+
+Returns the application name.
+
+#### Response:
+```
+MY-DOC-API
+```
+
+## 🔹 Supported File Types
+
+- PDF (.pdf)
+- Word (.docx)
+- Excel (.xlsx)
+- CSV (.csv)
+- Text (.txt)
+- PowerPoint (.pptx)
+- Images (.jpg, .jpeg, .png, .gif)
+- Markdown (.md)
+
+---
+
+## 🔧 Database Schema
+
+### Files Table (D1)
+```sql
+CREATE TABLE files (
+  id TEXT PRIMARY KEY,
+  document_id TEXT UNIQUE NOT NULL,
+  filename TEXT NOT NULL,
+  original_filename TEXT NOT NULL,
+  folder TEXT NOT NULL DEFAULT 'documents',
+  content_type TEXT NOT NULL,
+  size INTEGER NOT NULL,
+  r2_key TEXT NOT NULL,
+  uploaded_by TEXT NOT NULL,
+  uploaded_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  metadata TEXT, -- JSON string for additional metadata
+  is_deleted BOOLEAN DEFAULT FALSE,
+  deleted_at DATETIME
+);
+
+CREATE INDEX idx_files_document_id ON files(document_id);
+CREATE INDEX idx_files_uploaded_by ON files(uploaded_by);
+CREATE INDEX idx_files_folder ON files(folder);
+```
+
+---
+
+## 🗂️ R2 Storage Structure
+
+### Bucket Organization
+```
+cf-template-{env}/
+├── documents/
+│   ├── 2025/09/17/
+│   │   ├── doc_1234567890abcdef_document.pdf
+│   │   └── doc_abcdef1234567890_image.jpg
+│   └── user123/
+│       └── doc_fedcba0987654321_report.docx
+├── images/
+│   └── 2025/09/17/
+│       └── doc_567890abcdef1234_photo.png
+└── temp/
+    └── doc_temp_1234567890_upload.tmp
+```
+
+### Key Generation Strategy
+- Format: `{folder}/{year}/{month}/{day}/{documentId}_{sanitized_filename}`
+- Example: `documents/2025/09/17/doc_1234567890abcdef_my-document.pdf`
+
+---
+
+## 🔒 Security Considerations
+
+### Authentication & Authorization
+- All endpoints require authentication via existing auth middleware
+- Users can only access files they uploaded (unless admin permissions)
+- Document IDs are cryptographically secure random strings
+
+### File Validation
+- File type validation based on MIME type and file extension
+- File size limits (configurable, default 100MB)
+- Filename sanitization to prevent path traversal
+- Virus scanning integration (future enhancement)
+
+### Access Control
+- Signed URLs with configurable expiration (default 1 hour)
+- Rate limiting on upload endpoint
+- CORS configuration for allowed origins
+
+---
+
+## ⚠️ Error Handling
+
+### Error Codes
+- `INVALID_FILE_TYPE`: Unsupported file type
+- `FILE_TOO_LARGE`: File exceeds size limit
+- `DOCUMENT_NOT_FOUND`: Document ID not found
+- `UPLOAD_FAILED`: R2 upload operation failed
+- `DATABASE_ERROR`: D1 database operation failed
+- `UNAUTHORIZED`: Authentication failed
+- `FORBIDDEN`: Insufficient permissions
+
+### Error Response Format
+```json
+{
+  "success": false,
+  "error": "Human readable error message",
+  "code": "ERROR_CODE",
+  "details": {
+    "field": "Additional context"
+  }
+}
+```
+
+---
+
+## ⚙️ Configuration
+
+### Environment Variables
+```toml
+# wrangler.toml additions
+[env.{environment}.vars]
+MAX_FILE_SIZE = "104857600"  # 100MB in bytes
+ALLOWED_FILE_TYPES = "pdf,doc,docx,txt,jpg,jpeg,png,gif"
+DEFAULT_URL_EXPIRY = "3600"  # 1 hour in seconds
+UPLOAD_RATE_LIMIT = "10"     # uploads per minute per user
+```
+
+### R2 Bucket Configuration
+- Bucket names: `cf-template-{environment}`
+- CORS settings for web uploads
+- Lifecycle policies for temporary files
+---
+
+## 🚀 R2 Client Setup Example
+
+```ts
+export const r2 = env => ({
+  async uploadObject({ key, body, contentType }) {
+    await env.CF_TEMPLATE_BUCKET.put(key, body, { httpMetadata: { contentType } })
+  },
+
+  async getObject({ key }) {
+    const object = await env.CF_TEMPLATE_BUCKET.get(key)
+    if (!object) throw new Error("Object not found")
+    return object.body
+  },
+
+  async deleteObject({ key }) {
+    await env.CF_TEMPLATE_BUCKET.delete(key)
+  }
+})
+```
+
+---
+
+## 🎯 Performance Considerations
+
+### Optimization Strategies
+- Streaming uploads for large files
+- Parallel processing for metadata storage
+- CDN integration for file delivery
+- Compression for text-based files
+
+### Monitoring & Metrics
+- Upload success/failure rates
+- File size distribution
+- Popular file types
+- Storage usage by folder/user
+
+---
+
+### API Versioning
+- Current version: v1
+- Versioning strategy: URL path (`/api/cf-template/v1/files/`)
+- Backward compatibility maintenance
+
+---
+
+## 💻 Implementation Notes
+
+### Dependencies
+- `@cloudflare/workers-types`: TypeScript definitions
+- `hono`: Web framework
+- `uuid`: Document ID generation
+- `mime-types`: Content type detection
+
+### Testing Strategy
+- Unit tests for utility functions
+- Integration tests for API endpoints
+- Load testing for file upload performance
+- Security testing for access controls
+
+---
+
+## Component Reference List
+
+| Component                    | Repo / Design Link                              |
+| ---------------------------- | ----------------------------------------------- |
+| Hono.js API                  | Will be in `my-doc-api` repository             |
+| Cloudflare R2 Storage        | Used directly (CF_TEMPLATE_BUCKET) – Available |
+| Metadata DB                  | Cloudflare D1 (CF_TEMPLATE_DB) – Available     |
+| OpenAPI Documentation        | Inline in code via Swagger decorators          |
+| File Management Frontend     | Not scoped in this version                      |
+
+---                              
+
+## Component Type – API
+
+- **Framework**: Hono.js (Cloudflare Worker)
+- **Mount Path**: `/api/cf-template`
+- **Health Endpoint**: `GET /health → "OK"`
+- **Name Endpoint**: `GET /api-name → "MY-DOC-API"`
+- **Run With**: Docker Compose
+- **Auth**: `X-Api-Token` or `Authorization: Bearer ...`, plus existing auth middleware
+- **Reference Structure**: `cf-worker-api-template`
+
+---
+
+## Prepare Component Repositories
+
+| Component      | Template Ref           |
+| -------------- | ---------------------- |
+| API Backend    | `cf-worker-api-template` |
+| Docker Compose | Required for local run |
+
+---
+
+## GitHub Actions Pipeline
+
+```mermaid
+flowchart TB
+    Build[Build & Push] --> DeployDev[Deploy to Dev]
+    DeployDev --> EA[Environment Approval]
+    EA --> DeployProd[Deploy to Prod]
+    DeployProd --> Merge[Merge to Main]
+```
+
+---
+
+## Code Review Requirements
+
+- GitHub Actions or Helm chart changes → code review required
+- Feature-level changes can be pushed to feature branch
+- Prod deploys → reviewed + scheduled
+
+---
+
+*Last updated: 2025-09-17*
+*Version: 1.0*
+Footer
+© 2025 GitH
